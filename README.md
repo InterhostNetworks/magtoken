@@ -9,3 +9,4 @@ magtoken v0.1 (alpha)
 notes:
 - system yet very fragile in alpha stage. Make sure you test it before putting in production.
 - account id in stalker must have a not NOT-NULL value.
+- usb-disks-handler.sh differs in 2.6.18 but the idea is the same, just need to add the same lines in the file
