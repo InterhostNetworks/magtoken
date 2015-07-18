@@ -10,6 +10,9 @@ SATA_DEV="null"
 MEDIA_TYPE="0"
 DEV_PATH_ATTR_NAME="devPath"
 
+NTFSLABEL_PROG="/root/bin/ntfslabel"
+VFATLABEL_PROG="/usr/sbin/blkid"
+
 filterSnString()
 {
     SERIAL=`echo -n \"$1\" | strings | awk '{ s=$0; gsub(/[^a-zA-Z0-9_]/, "", s); printf s }'`
@@ -18,9 +21,67 @@ filterSnString()
     fi
 }
 
+getCodePageCurrent(){
+    currLang=$(read_nvram_var "language")
+    case ${currLang} in
+        "de")
+            echo -n "850"
+        ;;
+        "ru")
+            log "using cp 866..."
+            echo -n "866"
+        ;;
+        *)
+            log "using default cp 866..."
+            echo -n "866"
+        ;;
+    esac
+}
+
+getDiskLabel() {
+    diskOfInterest="/dev/${1}"
+    #echo "diskOfInterest = '${diskOfInterest}'"
+    case ${2} in
+        "ntfs")
+            ${NTFSLABEL_PROG} -nf ${diskOfInterest} 2>/dev/null
+        ;;
+        "ext2")
+        ;;
+        "ext3")
+        ;;
+        "vfat")
+            ${VFATLABEL_PROG} ${diskOfInterest} | /root/bin/iconv -f $(getCodePageCurrent) -t utf8 | sed -n 's/^.*LABEL="\([^"]*\).*/\1/gp'
+        ;;
+        *)
+            echo -n "UNKNOWN"
+        ;;
+    esac
+}
+
+getFsTypeIndex() {
+    case ${1} in
+        "ntfs")
+            echo -n "5"
+        ;;
+        "ext2")
+            echo -n "3"
+        ;;
+        "ext3")
+            echo -n "4"
+        ;;
+        "vfat")
+            echo -n "2"
+        ;;
+        *)
+            echo -n "0"
+        ;;
+    esac
+}
+
+
 # EXECUTION POINT
 
-log "* devName='${DEV_NAME}', sn='${SERIAL}', pNum='${PNUM}', vendor='${uVendor}', model='${uModel}', DevPath='${DEVPATH}'"
+log "devName='${DEV_NAME}', sn='${SERIAL}', pNum='${PNUM}', vendor='${uVendor}', model='${uModel}', DevPath='${DEVPATH}'"
 
 case $1 in
     add)
@@ -28,8 +89,11 @@ case $1 in
 
         SATA_DEV=`echo "'${DEVPATH}'" | awk '{ i1 = index($0, "/sata-stm/"); if(i1 > 0){print "sata"  }}'`;
         if [ "$SATA_DEV" == "sata" ]; then
-           if [ "$PNUM" == "" ]; then
-            echo "/dev/${DEV_NAME}" >/ram/satadev
+           if [ ! -f /ram/satadev ]; then
+                SATA_DEVICE_OF_INTEREST=`echo -n "/dev/${DEV_NAME}" | sed -n 's/^\(\/dev\/sd[a-z]\).*$/\1/pg'`
+                if [ ! -z "${SATA_DEVICE_OF_INTEREST}" ]; then
+                    echo -n "${SATA_DEVICE_OF_INTEREST}" > /ram/satadev
+                fi
            fi
         fi
 
@@ -40,8 +104,12 @@ case $1 in
         fi
         size=$(( size * 512 ));
 
-        label=`blkid -c /ram/blkid.tab /dev/${DEV_NAME} | awk '{ i1 = index($0, " LABEL=\""); if(i1 > 0){ s1 = substr($0, i1 + 8); i2 = index(s1, "\""); if (i2 > 0){print substr(s1, 0, i2 - 1);} } }'`;
+        #label=`blkid -c /ram/blkid.tab /dev/${DEV_NAME} | awk '{ i1 = index($0, " LABEL=\""); if(i1 > 0){ s1 = substr($0, i1 + 8); i2 = index(s1, "\""); if (i2 > 0){print substr(s1, 0, i2 - 1);} } }'`;
         fstype=`blkid -c /ram/blkid.tab /dev/${DEV_NAME} | awk '{ i1 = index($0, " TYPE=\""); if(i1 > 0){ s1 = substr($0, i1 + 7); i2 = index(s1, "\""); if (i2 > 0){print substr(s1, 0, i2 - 1);} } }'`;
+        fsTypeIndex=$(getFsTypeIndex ${fstype})
+
+        label=$(getDiskLabel ${DEV_NAME} ${fstype})
+        log "fstype=${fstype}, fsTypeIndex=${fsTypeIndex}, label=${label}"
 
         if [ "$fstype" == "" ]; then
             log "fstype is empty!"
@@ -108,8 +176,18 @@ case $1 in
         freeSize=`df -k | grep /ram/media/$FULL_NAME | awk '{print $4}'`
         freeSize=$((${freeSize}*1024))
 
-        echo "key:${FULL_NAME}:{\"sn\":\"${SERIAL}\",\"vendor\":\"${uVendor}\",\"model\":\"${uModel}\",\"size\":${size},\"freeSize\":${freeSize},\"label\":\"${label}\",\"partitionNum\":${PNUM},\"isReadOnly\":${IS_READ_ONLY},\"mountPath\":\"${FOLDER_TO_CREATE}\",\"mediaType\":${MEDIA_TYPE},\"${DEV_PATH_ATTR_NAME}\":\"${DEVPATH}\"}" >> $MOUNTS_CACHE
+        READ_ONLY_STATUS=`mount | grep /ram/media/$FULL_NAME | sed -n "s/^.*(\(rw\).*$/\1/p"`
+        log "READ_ONLY_STATUS=${READ_ONLY_STATUS}"
+        if [ "${READ_ONLY_STATUS}" = "rw" ]; then
+            IS_READ_ONLY="0"
+        else
+            IS_READ_ONLY="1"
+        fi
+
+        echo "key:${FULL_NAME}:{\"sn\":\"${SERIAL}\",\"vendor\":\"${uVendor}\",\"model\":\"${uModel}\",\"size\":${size},\"freeSize\":${freeSize},\"label\":\"${label}\",\"partitionNum\":${PNUM},\"isReadOnly\":${IS_READ_ONLY},\"mountPath\":\"${FOLDER_TO_CREATE}\",\"mediaType\":${MEDIA_TYPE},\"fsType\":${fsTypeIndex},\"${DEV_PATH_ATTR_NAME}\":\"${DEVPATH}\"}" >> $MOUNTS_CACHE
         /usr/share/qt-4.6.0/sendqtevent -a -ks 0x70 -kqt 0x50
+        JSON="{\"key\":\"${FULL_NAME}\",\"sn\":\"${SERIAL}\",\"vendor\":\"${uVendor}\",\"model\":\"${uModel}\",\"size\":${size},\"freeSize\":${freeSize},\"label\":\"${label}\",\"partitionNum\":${PNUM},\"isReadOnly\":${IS_READ_ONLY},\"mountPath\":\"${FOLDER_TO_CREATE}\",\"mediaType\":${MEDIA_TYPE},\"fsType\":${fsTypeIndex},\"${DEV_PATH_ATTR_NAME}\":\"${DEVPATH}\"}"
+        sh /root/post.sh $JSON
     ;;
     remove)
         log "remove command"
@@ -155,4 +233,3 @@ case $1 in
 esac
 
 exit 0
- 
