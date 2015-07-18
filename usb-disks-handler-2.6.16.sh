@@ -132,7 +132,7 @@ case $1 in
             rmdir "${MOUNT_POINT}"
             excludeByDevPath ${MOUNTS_CACHE} ${DEVPATH}
             /usr/share/qt-4.6.0/sendqtevent -a -ks 0x71 -kqt 0x51
-            killall timer.sh
+            kill `cat /tmp/magtoken.pid`
         fi
         if [ "$SERIAL" == "UNASSIGNED" ]; then
            if [ -d /ram/media/HDD-SATA-${PNUM} ]; then
